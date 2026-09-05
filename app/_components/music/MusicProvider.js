@@ -12,6 +12,7 @@ import {
   setAudioModeAsync,
   useAudioPlayer,
   useAudioPlayerStatus,
+  Audio,
 } from 'expo-audio';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
@@ -20,6 +21,7 @@ import {
   getLibraryFolderHint,
   loadLibrarySongs,
   requestFileStoragePermission,
+  artworkUriToDataUri,
 } from '../../_lib/musicLibrary';
 import {
   createPlaylistExportZip,
@@ -36,6 +38,15 @@ import {
 
 const MusicContext = createContext(null);
 
+function shuffled(list) {
+  const copy = [...list];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
+}
+
 export function MusicProvider({ children }) {
   const player = useAudioPlayer(null, { updateInterval: 250 });
   const playback = useAudioPlayerStatus(player);
@@ -46,9 +57,11 @@ export function MusicProvider({ children }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [currentTrack, setCurrentTrack] = useState(null);
-  const [queue, setQueue] = useState([]);
+  const [order, setOrder] = useState([]);
   const [favoriteIds, setFavoriteIds] = useState([]);
   const [playlists, setPlaylists] = useState([]);
+  const [shuffle, setShuffle] = useState(false);
+  const [shuffledOrder, setShuffledOrder] = useState([]);
   const [transferingPlaylists, setTransferingPlaylists] = useState(false);
   const didJustFinishRef = useRef(false);
 
@@ -70,7 +83,18 @@ export function MusicProvider({ children }) {
     setAudioModeAsync({
       playsInSilentMode: true,
       shouldPlayInBackground: true,
+      interruptionMode: 'doNotMix',
     }).catch(() => {});
+
+    if (Platform.OS === 'android') {
+      Audio.requestNotificationPermissionsAsync()
+        .then((response) => {
+          if (!response.granted) {
+            console.warn('Notification permission not granted');
+          }
+        })
+        .catch(() => {});
+    }
   }, []);
 
   const loadSongs = useCallback(async () => {
@@ -182,26 +206,60 @@ export function MusicProvider({ children }) {
   }, []);
 
   const playSong = useCallback(
-    async (song) => {
+    async (song, { advanceWithinQueue = false } = {}) => {
       try {
         const uri = await resolveUri(song);
         const track = { ...song, uri };
+        if (!advanceWithinQueue) {
+          setOrder([]);
+        }
         setCurrentTrack(track);
-        setQueue((current) => {
-          if (current.length === 0) {
-            return current;
-          }
-
-          const index = current.findIndex((item) => item.id === song.id);
-          if (index > 0) {
-            return current.slice(index + 1);
-          }
-          if (index === 0) {
-            return current.slice(1);
-          }
-          return [];
-        });
         player.replace({ uri, name: track.title });
+
+        const artworkUrl = await artworkUriToDataUri(track.artworkUri);
+
+        try {
+          player.setActiveForLockScreen(true, {
+            title: track.title,
+            artist: track.artist || 'Unknown Artist',
+            artworkUrl: artworkUrl || undefined,
+          });
+        } catch {
+          // Lock screen controls are only supported on iOS and Android.
+        }
+
+        player.play();
+      } catch (playError) {
+        Alert.alert(
+          'Playback error',
+          playError?.message ?? 'Could not play this song.',
+        );
+      }
+    },
+    [player, resolveUri],
+  );
+
+  const playSongFromList = useCallback(
+    async (song, list) => {
+      try {
+        const uri = await resolveUri(song);
+        const track = { ...song, uri };
+        setOrder(list);
+        setCurrentTrack(track);
+        player.replace({ uri, name: track.title });
+
+        const artworkUrl = await artworkUriToDataUri(track.artworkUri);
+
+        try {
+          player.setActiveForLockScreen(true, {
+            title: track.title,
+            artist: track.artist || 'Unknown Artist',
+            artworkUrl: artworkUrl || undefined,
+          });
+        } catch {
+          // Lock screen controls are only supported on iOS and Android.
+        }
+
         player.play();
       } catch (playError) {
         Alert.alert(
@@ -238,25 +296,55 @@ export function MusicProvider({ children }) {
     [currentTrack, playback.duration, player],
   );
 
-  const addToQueue = useCallback((song) => {
-    setQueue((current) => {
-      if (current.some((item) => item.id === song.id)) {
-        return current;
-      }
-      return [...current, song];
-    });
-  }, []);
+  const addToQueue = useCallback(
+    (song) => {
+      setOrder((currentOrder) => {
+        const base = currentOrder.length > 0 ? currentOrder : songs;
+        if (base.some((item) => item.id === song.id)) {
+          return currentOrder;
+        }
+        const currentIndex = base.findIndex(
+          (item) => item.id === currentTrack?.id,
+        );
+        const insertAt = currentIndex >= 0 ? currentIndex + 1 : base.length;
+        const next = [
+          ...base.slice(0, insertAt),
+          song,
+          ...base.slice(insertAt),
+        ];
+        return next;
+      });
+    },
+    [currentTrack, songs],
+  );
 
-  const upNext = useMemo(() => {
-    if (queue.length > 0) {
-      return queue;
+  const toggleShuffle = useCallback(() => {
+    if (shuffle) {
+      setShuffle(false);
+      return;
     }
 
-    const currentIndex = songs.findIndex(
+    const base = order.length > 0 ? order : songs;
+    const rest = base.filter((song) => song.id !== currentTrack?.id);
+    setShuffledOrder(
+      currentTrack ? [currentTrack, ...shuffled(rest)] : shuffled(base),
+    );
+    setShuffle(true);
+  }, [currentTrack, order, shuffle, songs]);
+
+  const queueList = useMemo(() => {
+    if (shuffle && shuffledOrder.length > 0) {
+      return shuffledOrder;
+    }
+    return order.length > 0 ? order : songs;
+  }, [order, shuffle, shuffledOrder, songs]);
+
+  const upNext = useMemo(() => {
+    const currentIndex = queueList.findIndex(
       (song) => song.id === currentTrack?.id,
     );
-    return currentIndex >= 0 ? songs.slice(currentIndex + 1) : [];
-  }, [currentTrack, queue, songs]);
+    return currentIndex >= 0 ? queueList.slice(currentIndex + 1) : [];
+  }, [currentTrack, queueList]);
 
   const moveUpNext = useCallback(
     (from, to) => {
@@ -264,19 +352,11 @@ export function MusicProvider({ children }) {
         return;
       }
 
-      setQueue((current) => {
-        let list;
-        if (current.length > 0) {
-          list = [...current];
-        } else {
-          const currentIndex = songs.findIndex(
-            (song) => song.id === currentTrack?.id,
-          );
-          list = currentIndex >= 0 ? songs.slice(currentIndex + 1) : [];
-        }
+      setOrder((currentOrder) => {
+        const list = currentOrder.length > 0 ? [...currentOrder] : [...songs];
 
         if (from < 0 || from >= list.length || to < 0 || to >= list.length) {
-          return current;
+          return currentOrder;
         }
 
         const [moved] = list.splice(from, 1);
@@ -284,34 +364,25 @@ export function MusicProvider({ children }) {
         return list;
       });
     },
-    [currentTrack, songs],
+    [songs],
   );
 
   const nextTrack = useCallback(() => {
-    const queuedTrack = queue[0];
-    if (queuedTrack) {
-      void playSong(queuedTrack);
-      return;
-    }
-
-    const currentIndex = songs.findIndex(
-      (song) => song.id === currentTrack?.id,
-    );
-    const next = currentIndex >= 0 ? songs[currentIndex + 1] : songs[0];
+    const next = upNext[0];
     if (next) {
-      void playSong(next);
+      void playSong(next, { advanceWithinQueue: true });
     }
-  }, [currentTrack, playSong, queue, songs]);
+  }, [playSong, upNext]);
 
   const previousTrack = useCallback(() => {
-    const currentIndex = songs.findIndex(
+    const currentIndex = queueList.findIndex(
       (song) => song.id === currentTrack?.id,
     );
-    const previous = currentIndex > 0 ? songs[currentIndex - 1] : null;
+    const previous = currentIndex > 0 ? queueList[currentIndex - 1] : null;
     if (previous) {
-      void playSong(previous);
+      void playSong(previous, { advanceWithinQueue: true });
     }
-  }, [currentTrack, playSong, songs]);
+  }, [currentTrack, playSong, queueList]);
 
   useEffect(() => {
     if (playback.didJustFinish === didJustFinishRef.current) {
@@ -330,6 +401,13 @@ export function MusicProvider({ children }) {
 
     return () => clearTimeout(id);
   }, [playback.didJustFinish, nextTrack]);
+
+  useEffect(() => {
+    if (currentTrack) {
+      return;
+    }
+    player.clearLockScreenControls();
+  }, [currentTrack, player]);
 
   const toggleFavorite = useCallback(
     async (song) => {
@@ -497,7 +575,7 @@ export function MusicProvider({ children }) {
       loading,
       error,
       currentTrack,
-      queue,
+      queueList,
       upNext,
       playlists,
       favoriteIds,
@@ -505,8 +583,11 @@ export function MusicProvider({ children }) {
       requestAccess,
       loadSongs,
       playSong,
+      playSongFromList,
       togglePlay,
       seekTo,
+      shuffle,
+      toggleShuffle,
       nextTrack,
       previousTrack,
       addToQueue,
@@ -537,12 +618,15 @@ export function MusicProvider({ children }) {
       moveUpNext,
       permission,
       playSong,
+      playSongFromList,
       playback,
       playlists,
-      queue,
+      queueList,
       requestAccess,
       songs,
       seekTo,
+      shuffle,
+      toggleShuffle,
       transferingPlaylists,
       upNext,
       toggleFavorite,

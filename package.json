@@ -35,6 +35,8 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
+    "ios:device": "expo run:ios --configuration Release --device",
+    "ios:build": "xcodebuild -workspace ios/KingMusicPlayer.xcworkspace -scheme KingMusicPlayer -configuration Release -sdk iphoneos build",
     "web": "expo start --web",
     "lint": "expo lint",
     "format": "prettier --write \"**/*.{js,jsx,json}\""
@@ -46,6 +48,10 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
     "prettier": "^3.9.6",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "@react-native-community/cli": "latest"
+  },
+  "allowScripts": {
+    "unrs-resolver@1.12.2": true
   }
 }

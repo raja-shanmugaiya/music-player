@@ -12,7 +12,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#0F0F0F"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.raja010.music-player"
@@ -62,6 +64,8 @@
       "eas": {
         "projectId": "89927c7e-4913-4133-b116-d12cf8ff7d00"
       }
-    }
-  }
+    },
+    "sdkVersion": "57.0.0"
+  },
+  "name": "music-player"
 }

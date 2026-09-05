@@ -24,14 +24,6 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function SectionLabel({ children }) {
-  return (
-    <Text variant="caption" style={styles.sectionLabel}>
-      {children}
-    </Text>
-  );
-}
-
 function QueueSongRow({
   variant,
   song,
@@ -48,8 +40,9 @@ function QueueSongRow({
   const isPlayed = variant === 'played';
   const isCurrent = variant === 'current';
   const isNext = variant === 'next';
+  const isReorderable = isNext || isPlayed;
 
-  const trailing = isNext ? (
+  const trailing = isReorderable ? (
     <View
       collapsable={false}
       onResponderGrant={(event) => {
@@ -75,15 +68,12 @@ function QueueSongRow({
     >
       <Ionicons color={colors.text.muted} name="reorder-three" size={22} />
     </View>
-  ) : isCurrent ? (
-    <Ionicons color={colors.primary[500]} name="radio" size={20} />
   ) : (
-    <Ionicons color={colors.text.muted} name="checkmark-done" size={18} />
+    <Ionicons color={colors.primary[500]} name="radio" size={20} />
   );
 
   return (
     <Pressable
-      disabled={!isNext}
       onPress={() => onPress?.(song)}
       style={({ pressed }) => [
         styles.queueRow,
@@ -115,19 +105,11 @@ function QueueSongRow({
       <View style={styles.queueMeta}>
         <Text
           numberOfLines={1}
-          style={[
-            styles.queueTitle,
-            isCurrent && styles.queueTitleCurrent,
-            isPlayed && styles.queueRowDim,
-          ]}
+          style={[styles.queueTitle, isCurrent && styles.queueTitleCurrent]}
         >
           {song.title}
         </Text>
-        <Text
-          numberOfLines={1}
-          variant="muted"
-          style={isPlayed && styles.queueRowDim}
-        >
+        <Text numberOfLines={1} variant="muted">
           {song.artist}
         </Text>
       </View>
@@ -136,33 +118,10 @@ function QueueSongRow({
   );
 }
 
-function QueueHeader({ previous, currentTrack, nextCount }) {
-  return (
-    <>
-      {previous.length > 0 && <SectionLabel>Played</SectionLabel>}
-      {previous.map((song, index) => (
-        <QueueSongRow
-          key={song.id}
-          index={index + 1}
-          song={song}
-          variant="played"
-        />
-      ))}
-      <SectionLabel>Now Playing</SectionLabel>
-      <QueueSongRow
-        index={previous.length + 1}
-        song={currentTrack}
-        variant="current"
-      />
-      {nextCount > 0 && <SectionLabel>Up Next</SectionLabel>}
-    </>
-  );
-}
-
-function UpNextEmpty() {
+function QueueEmpty() {
   return (
     <Text variant="muted" style={styles.empty}>
-      Nothing up next.
+      No songs in the queue.
     </Text>
   );
 }
@@ -177,7 +136,9 @@ export function NowPlaying({ visible, onClose }) {
     previousTrack,
     seekTo,
     playSong,
-    songs,
+    shuffle,
+    toggleShuffle,
+    queueList,
     upNext,
     moveUpNext,
   } = useMusic();
@@ -209,9 +170,19 @@ export function NowPlaying({ visible, onClose }) {
     playback?.duration > 0
       ? Math.min(playback.currentTime / playback.duration, 1)
       : 0;
-  const currentIndex = songs.findIndex((song) => song.id === currentTrack?.id);
-  const previous = currentIndex > 0 ? songs.slice(0, currentIndex) : [];
-  const nextBaseIndex = previous.length + 2;
+  const currentIndex = queueList.findIndex(
+    (song) => song.id === currentTrack?.id,
+  );
+  const previous = currentIndex > 0 ? queueList.slice(0, currentIndex) : [];
+  const queueRows =
+    queueList.length > 0 ? queueList : [...previous, currentTrack, ...upNext];
+
+  const queueRowVariant = (song) => {
+    if (song.id === currentTrack?.id) {
+      return 'current';
+    }
+    return previous.some((item) => item.id === song.id) ? 'played' : 'next';
+  };
 
   return (
     <Modal animationType="slide" onRequestClose={onClose} visible={visible}>
@@ -313,7 +284,19 @@ export function NowPlaying({ visible, onClose }) {
           <IconButton
             icon={
               <Ionicons
-                color={colors.text.primary}
+                color={shuffle ? colors.primary[500] : colors.text.inverse}
+                name="shuffle"
+                size={24}
+              />
+            }
+            onPress={toggleShuffle}
+            size={44}
+            tone="gray"
+          />
+          <IconButton
+            icon={
+              <Ionicons
+                color={colors.text.inverse}
                 name="play-skip-back"
                 size={28}
               />
@@ -337,7 +320,7 @@ export function NowPlaying({ visible, onClose }) {
           <IconButton
             icon={
               <Ionicons
-                color={colors.text.primary}
+                color={colors.text.inverse}
                 name="play-skip-forward"
                 size={28}
               />
@@ -358,9 +341,7 @@ export function NowPlaying({ visible, onClose }) {
             size={18}
           />
           <Text style={styles.upNextToggleText}>
-            {expanded
-              ? 'Hide queue'
-              : `Queue (${previous.length + 1 + upNext.length})`}
+            {expanded ? 'Hide queue' : `Queue (${queueRows.length})`}
           </Text>
           <Ionicons
             color={colors.primary[500]}
@@ -391,30 +372,28 @@ export function NowPlaying({ visible, onClose }) {
                 styles.panelContent,
                 { paddingBottom: insets.bottom + spacing['3xl'] },
               ]}
-              data={upNext}
+              data={queueRows}
               ItemSeparatorComponent={UpNextSeparator}
               keyExtractor={(item) => item.id}
-              ListEmptyComponent={UpNextEmpty}
-              ListHeaderComponent={
-                <QueueHeader
-                  currentTrack={currentTrack}
-                  nextCount={upNext.length}
-                  previous={previous}
-                />
-              }
-              renderItem={({ item, index }) => (
-                <QueueSongRow
-                  dragCount={upNext.length}
-                  index={nextBaseIndex + index}
-                  onDragEnd={() => setDragging(false)}
-                  onDragStart={() => setDragging(true)}
-                  onMove={moveUpNext}
-                  onPress={playSong}
-                  relativeIndex={index}
-                  song={item}
-                  variant="next"
-                />
-              )}
+              ListEmptyComponent={QueueEmpty}
+              renderItem={({ item, index }) => {
+                const variant = queueRowVariant(item);
+                const isReorderable =
+                  variant === 'next' || variant === 'played';
+                return (
+                  <QueueSongRow
+                    dragCount={queueRows.length}
+                    index={index + 1}
+                    onDragEnd={() => setDragging(false)}
+                    onDragStart={() => setDragging(true)}
+                    onMove={isReorderable && !shuffle ? moveUpNext : undefined}
+                    onPress={playSong}
+                    relativeIndex={index}
+                    song={item}
+                    variant={variant}
+                  />
+                );
+              }}
               scrollEnabled={!dragging}
             />
           </Animated.View>
@@ -520,11 +499,6 @@ const styles = StyleSheet.create({
   },
   panelContent: {
     paddingHorizontal: spacing.md,
-  },
-  sectionLabel: {
-    letterSpacing: 1,
-    marginTop: spacing.md,
-    marginBottom: spacing.xs,
   },
   queueRow: {
     flexDirection: 'row',

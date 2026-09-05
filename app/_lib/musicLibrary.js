@@ -101,16 +101,83 @@ async function mediaTagFilePath(fileUri) {
     return decodeURIComponent(fileUri.replace(/^file:\/\//, ''));
   }
 
-  const separator = Paths.cache.endsWith('/') ? '' : '/';
-  const cacheUri = `${Paths.cache}${separator}king-music-tag-${encodeURIComponent(
-    fileUri,
-  )}.mp3`;
+  const cacheFile = new File(
+    Paths.cache,
+    `king-music-tag-${encodeURIComponent(fileUri)}.mp3`,
+  );
+  const cacheUri = cacheFile.uri;
   const exists = await FileSystem.getInfoAsync(cacheUri);
   if (!exists.exists) {
     await FileSystem.copyAsync({ from: fileUri, to: cacheUri });
   }
 
   return decodeURIComponent(cacheUri.replace(/^file:\/\//, ''));
+}
+
+const MAX_TAG_READ_BYTES = 1024 * 1024;
+const ID3V1_BYTES = 128;
+const ID3V2_HEADER_BYTES = 10;
+
+async function readByteRange(filePath, start, length) {
+  const handle = new File(filePath).open();
+  try {
+    if (start > 0) {
+      handle.offset = start;
+    }
+    return handle.readBytes(Math.max(0, length));
+  } finally {
+    handle.close();
+  }
+}
+
+function id3v2DeclaredSize(header) {
+  if (
+    header.length < ID3V2_HEADER_BYTES ||
+    header[0] !== 0x49 ||
+    header[1] !== 0x44 ||
+    header[2] !== 0x33
+  ) {
+    return 0;
+  }
+
+  return (
+    ((header[6] & 0x7f) << 21) |
+    ((header[7] & 0x7f) << 14) |
+    ((header[8] & 0x7f) << 7) |
+    (header[9] & 0x7f)
+  );
+}
+
+async function readTagBytes(filePath) {
+  const file = new File(filePath);
+  if (!file.exists || file.size <= 0) {
+    return new Uint8Array(0);
+  }
+
+  const fileSize = file.size;
+  const headerLength = Math.min(fileSize, ID3V2_HEADER_BYTES);
+  const header = await readByteRange(filePath, 0, headerLength);
+  const declaredSize = id3v2DeclaredSize(header);
+
+  const wantHead = declaredSize
+    ? Math.min(ID3V2_HEADER_BYTES + declaredSize, MAX_TAG_READ_BYTES)
+    : Math.min(64 * 1024, MAX_TAG_READ_BYTES);
+  const headEnd = Math.min(wantHead, fileSize);
+
+  const head =
+    headerLength >= headEnd
+      ? header
+      : await readByteRange(filePath, 0, headEnd);
+
+  let tail = new Uint8Array(0);
+  if (fileSize - headEnd >= ID3V1_BYTES) {
+    tail = await readByteRange(filePath, fileSize - ID3V1_BYTES, ID3V1_BYTES);
+  }
+
+  const combined = new Uint8Array(head.length + tail.length);
+  combined.set(head, 0);
+  combined.set(tail, head.length);
+  return combined;
 }
 
 function readTagsFromBytes(bytes) {
@@ -139,7 +206,7 @@ function readTagsFromBytes(bytes) {
 
 async function readMediaTags(fileUri) {
   const filePath = await mediaTagFilePath(fileUri);
-  const bytes = await new File(filePath).bytes();
+  const bytes = await readTagBytes(filePath);
   return readTagsFromBytes(bytes);
 }
 
@@ -150,13 +217,14 @@ async function extractEmbeddedArtworkUri(fileUri, mediaTags) {
     return null;
   }
 
-  const separator = Paths.cache.endsWith('/') ? '' : '/';
-  const cacheDirectory = `${Paths.cache}${separator}${ARTWORK_CACHE_DIR_NAME}`;
-  await FileSystem.makeDirectoryAsync(cacheDirectory, { intermediates: true });
+  const cacheDir = new Directory(Paths.cache, ARTWORK_CACHE_DIR_NAME);
+  if (!cacheDir.exists) {
+    cacheDir.create({ intermediates: true });
+  }
 
   const extension = picture.format?.split('/')[1] || 'jpeg';
   const fileName = `${encodeURIComponent(fileUri)}.${extension}`;
-  const cacheUri = `${cacheDirectory}/${fileName}`;
+  const cacheUri = `${cacheDir.uri}/${fileName}`;
 
   const exists = await FileSystem.getInfoAsync(cacheUri);
   if (!exists.exists) {
@@ -185,7 +253,31 @@ export async function resolveSongArtworkUri(fileUri, mediaTags) {
   }
 }
 
-function collectAudioFiles(directory, results = []) {
+export async function artworkUriToDataUri(artworkUri) {
+  if (!artworkUri) {
+    return null;
+  }
+
+  try {
+    const base64 = await FileSystem.readAsStringAsync(artworkUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    const ext = artworkUri.split('.').pop()?.toLowerCase();
+    const mime =
+      ext === 'png'
+        ? 'image/png'
+        : ext === 'webp'
+          ? 'image/webp'
+          : ext === 'gif'
+            ? 'image/gif'
+            : 'image/jpeg';
+    return `data:${mime};base64,${base64}`;
+  } catch {
+    return null;
+  }
+}
+
+function collectAudioFiles(directory, folder, results = []) {
   if (!directory?.exists || typeof directory.list !== 'function') {
     return results;
   }
@@ -204,7 +296,7 @@ function collectAudioFiles(directory, results = []) {
 
     if (item instanceof File) {
       if (isAudioFile(item)) {
-        results.push(item);
+        results.push({ item, folder });
       }
       return;
     }
@@ -213,19 +305,24 @@ function collectAudioFiles(directory, results = []) {
       if (SKIP_DIRECTORY_NAMES.has(item.name)) {
         return;
       }
-      collectAudioFiles(item, results);
+      const childFolder = folder ? `${folder}/${item.name}` : item.name;
+      collectAudioFiles(item, childFolder, results);
       return;
     }
 
     if (item?.uri && isAudioFile(item)) {
-      results.push(item);
+      results.push({ item, folder });
     }
   });
 
   return results;
 }
 
-async function collectSafAudioFiles(directoryUri, results = []) {
+async function collectSafAudioFiles(
+  directoryUri,
+  results = [],
+  folder = LIBRARY_FOLDER_NAME,
+) {
   let uris = [];
   try {
     uris =
@@ -241,11 +338,11 @@ async function collectSafAudioFiles(directoryUri, results = []) {
     }
 
     if (isAudioName(name)) {
-      results.push({ uri, name });
+      results.push({ item: { uri, name }, folder });
       continue;
     }
 
-    await collectSafAudioFiles(uri, results);
+    await collectSafAudioFiles(uri, results, `${folder}/${name}`);
   }
 
   return results;
@@ -374,7 +471,7 @@ export async function ensureLibraryDirectory() {
   return { kind: 'file', directory: appSandboxLibraryDirectory() };
 }
 
-export async function mapFileToSong(file) {
+export async function mapFileToSong(file, folder = '') {
   const filename = file.name || 'Unknown';
   const fallbackMeta = parseSongMeta(filename);
   let mediaTags = null;
@@ -399,16 +496,117 @@ export async function mapFileToSong(file) {
     duration: null,
     uri: file.uri,
     artworkUri,
+    folder,
   };
 }
 
+async function mapWithLimit(items, limit, mapper) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return results;
+}
+
+async function fileMeta(item) {
+  if (item instanceof File) {
+    return { size: item.size, lastModified: item.lastModified };
+  }
+
+  let info = null;
+  try {
+    info = await FileSystem.getInfoAsync(item?.uri);
+  } catch {
+    info = null;
+  }
+
+  return {
+    size: info?.size ?? 0,
+    lastModified: info?.modificationTime ?? 0,
+  };
+}
+
+const SONGS_CACHE_KEY = '@king-music/songs-cache-v1';
+let libraryLoadPromise = null;
+
 export async function loadLibrarySongs() {
+  if (libraryLoadPromise) {
+    return libraryLoadPromise;
+  }
+
+  libraryLoadPromise = scanLibrarySongs().finally(() => {
+    libraryLoadPromise = null;
+  });
+  return libraryLoadPromise;
+}
+
+async function scanLibrarySongs() {
   const library = await ensureLibraryDirectory();
-  const files =
+  const collected =
     library.kind === 'saf'
       ? await collectSafAudioFiles(library.uri)
-      : collectAudioFiles(library.directory);
+      : collectAudioFiles(library.directory, LIBRARY_FOLDER_NAME);
 
-  const songs = await Promise.all(files.map(mapFileToSong));
+  let cache = {};
+  try {
+    cache = JSON.parse((await AsyncStorage.getItem(SONGS_CACHE_KEY)) || 'null');
+  } catch {}
+  if (!cache || typeof cache !== 'object') {
+    cache = {};
+  }
+
+  const metas = await mapWithLimit(collected, 4, ({ item }) => fileMeta(item));
+  const unchanged = [];
+  const changed = [];
+
+  collected.forEach(({ item, folder }, index) => {
+    const meta = metas[index];
+    const cached = cache[item.uri];
+    if (
+      cached?.song &&
+      cached.size === meta.size &&
+      cached.lastModified === meta.lastModified
+    ) {
+      unchanged.push({ song: cached.song, meta });
+    } else {
+      changed.push({ item, folder, meta });
+    }
+  });
+
+  const scanned = await mapWithLimit(
+    changed,
+    4,
+    async ({ item, folder, meta }) => ({
+      song: await mapFileToSong(item, folder),
+      meta,
+    }),
+  );
+
+  const nextCache = {};
+  unchanged.forEach(({ song, meta }) => {
+    nextCache[song.uri] = { song, ...meta };
+  });
+  scanned.forEach(({ song, meta }) => {
+    nextCache[song.uri] = { song, ...meta };
+  });
+
+  try {
+    await AsyncStorage.setItem(SONGS_CACHE_KEY, JSON.stringify(nextCache));
+  } catch {}
+
+  const songs = [
+    ...unchanged.map(({ song }) => song),
+    ...scanned.map(({ song }) => song),
+  ];
   return songs.sort((a, b) => a.title.localeCompare(b.title));
 }
