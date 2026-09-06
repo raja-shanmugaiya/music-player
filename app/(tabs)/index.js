@@ -247,6 +247,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     padding: spacing.xs,
     marginTop: spacing.sm,
+    marginBottom: spacing.sm,
     marginHorizontal: spacing.md,
     gap: spacing.xs,
   },

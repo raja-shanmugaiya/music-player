@@ -2,6 +2,7 @@ import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, layout, spacing } from '../../_theme';
+import { useMusic } from '../music/MusicProvider';
 
 export function Screen({
   children,
@@ -11,14 +12,15 @@ export function Screen({
   withTabBar = false,
 }) {
   const insets = useSafeAreaInsets();
+  const { currentTrack } = useMusic();
   const baseHorizontalPadding = padded ? layout.screenPadding : 0;
 
   const paddingTop = edges.includes('top') ? insets.top : 0;
+  const miniPlayerSpace = currentTrack
+    ? layout.miniPlayerHeight + spacing.lg
+    : spacing.lg;
   const paddingBottom = withTabBar
-    ? layout.tabBarHeight +
-      layout.tabBarBottomOffset +
-      layout.miniPlayerHeight +
-      spacing.lg
+    ? layout.tabBarHeight + layout.tabBarBottomOffset + miniPlayerSpace
     : edges.includes('bottom')
       ? insets.bottom
       : 0;
