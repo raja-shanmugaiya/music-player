@@ -48,7 +48,7 @@ function shuffled(list) {
 }
 
 export function MusicProvider({ children }) {
-  const player = useAudioPlayer(null, { updateInterval: 250 });
+  const player = useAudioPlayer(null, { updateInterval: 1000 });
   const playback = useAudioPlayerStatus(player);
 
   const [permission, setPermission] = useState(null);

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -6,7 +7,12 @@ import { fontFamily } from '../../_theme/typography';
 import { formatDuration } from '../../_lib/songs';
 import { Text } from '../ui';
 
-export function SongRow({ song, onPress, onMore, isActive = false }) {
+export const SongRow = memo(function SongRow({
+  song,
+  onPress,
+  onMore,
+  isActive = false,
+}) {
   return (
     <Pressable
       onLongPress={() => onMore?.(song)}
@@ -52,7 +58,7 @@ export function SongRow({ song, onPress, onMore, isActive = false }) {
       </Pressable>
     </Pressable>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: {
